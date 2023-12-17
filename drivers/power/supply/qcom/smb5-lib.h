@@ -58,7 +58,6 @@ enum print_reason {
 #define OTG_DELAY_VOTER			"OTG_DELAY_VOTER"
 #define USBIN_I_VOTER			"USBIN_I_VOTER"
 #define WEAK_CHARGER_VOTER		"WEAK_CHARGER_VOTER"
-#define OTG_VOTER			"OTG_VOTER"
 #define PL_FCC_LOW_VOTER		"PL_FCC_LOW_VOTER"
 #define WBC_VOTER			"WBC_VOTER"
 #define HW_LIMIT_VOTER			"HW_LIMIT_VOTER"
@@ -74,6 +73,11 @@ enum print_reason {
 #define AICL_THRESHOLD_VOTER		"AICL_THRESHOLD_VOTER"
 #define USBOV_DBC_VOTER			"USBOV_DBC_VOTER"
 #define THERMAL_THROTTLE_VOTER		"THERMAL_THROTTLE_VOTER"
+#define USB_SUSPEND_VOTER		"USB_SUSPEND_VOTER"
+#define CHARGER_TYPE_VOTER		"CHARGER_TYPE_VOTER"
+#define HDC_IRQ_VOTER			"HDC_IRQ_VOTER"
+#define VOUT_VOTER			"VOUT_VOTER"
+#define DETACH_DETECT_VOTER		"DETACH_DETECT_VOTER"
 
 #define BOOST_BACK_STORM_COUNT	3
 #define WEAK_CHG_STORM_COUNT	8
@@ -102,6 +106,7 @@ enum smb_mode {
 enum sink_src_mode {
 	SINK_MODE,
 	SRC_MODE,
+	AUDIO_ACCESS_MODE,
 	UNATTACHED_MODE,
 };
 
@@ -114,9 +119,9 @@ enum qc2_non_comp_voltage {
 enum {
 	BOOST_BACK_WA			= BIT(0),
 	SW_THERM_REGULATION_WA		= BIT(1),
-	CHG_TERMINATION_WA		= BIT(2),
 	WEAK_ADAPTER_WA			= BIT(2),
 	USBIN_OV_WA			= BIT(3),
+	CHG_TERMINATION_WA		= BIT(4),
 };
 
 enum jeita_cfg_stat {
@@ -202,6 +207,7 @@ enum smb_irq_index {
 	FLASH_STATE_CHANGE_IRQ,
 	TORCH_REQ_IRQ,
 	FLASH_EN_IRQ,
+	SDAM_STS_IRQ,
 	/* END */
 	SMB_IRQ_MAX,
 };
@@ -226,6 +232,7 @@ struct smb_irq_info {
 	const struct storm_watch	storm_data;
 	struct smb_irq_data		*irq_data;
 	int				irq;
+	bool				enabled;
 };
 
 static const unsigned int smblib_extcon_cable[] = {
@@ -266,6 +273,10 @@ enum icl_override_mode {
 	HW_AUTO_MODE,
 	/* 100/150/500/900mA */
 	SW_OVERRIDE_USB51_MODE,
+#ifdef CONFIG_HTC_BATT_DCJACK
+	/* DCJACK */
+	SW_OVERRIDE_DCJACK_MODE,
+#endif
 	/* ICL other than USB51 */
 	SW_OVERRIDE_HC_MODE,
 };
@@ -364,6 +375,7 @@ struct smb_charger {
 	/* locks */
 	struct mutex		smb_lock;
 	struct mutex		ps_change_lock;
+	struct mutex		irq_status_lock;
 
 	/* power supplies */
 	struct power_supply		*batt_psy;
@@ -396,9 +408,11 @@ struct smb_charger {
 	struct votable		*pl_disable_votable;
 	struct votable		*chg_disable_votable;
 	struct votable		*pl_enable_votable_indirect;
-	struct votable		*usb_irq_enable_votable;
 	struct votable		*cp_disable_votable;
 	struct votable		*smb_override_votable;
+	struct votable		*icl_irq_disable_votable;
+	struct votable		*limited_irq_disable_votable;
+	struct votable		*hdc_irq_disable_votable;
 
 	/* work */
 	struct work_struct	bms_update_work;
@@ -416,6 +430,7 @@ struct smb_charger {
 	struct delayed_work	lpd_detach_work;
 	struct delayed_work	thermal_regulation_work;
 	struct delayed_work	usbov_dbc_work;
+	struct delayed_work	pr_swap_detach_work;
 
 	struct alarm		lpd_recheck_timer;
 	struct alarm		moisture_protection_alarm;
@@ -455,6 +470,10 @@ struct smb_charger {
 	bool			suspend_input_on_debug_batt;
 	int			default_icl_ua;
 	int			otg_cl_ua;
+
+	/* htc mfg */
+	int			vconn_sel;
+
 	bool			uusb_apsd_rerun_done;
 	bool			typec_present;
 	int			fake_input_current_limited;
@@ -500,6 +519,9 @@ struct smb_charger {
 	int			aicl_cont_threshold_mv;
 	int			default_aicl_cont_threshold_mv;
 	bool			aicl_max_reached;
+	int			last_cc_soc;
+	int			usbin_forced_max_uv;
+	int			init_thermal_ua;
 
 	/* workaround flag */
 	u32			wa_flags;
@@ -527,9 +549,25 @@ struct smb_charger {
 	u32			headroom_mode;
 	bool			flash_init_done;
 	bool			flash_active;
+	u32			irq_status;
 
 	/* wireless */
 	int			wireless_vout;
+
+#ifdef CONFIG_HTC_BATT_DCJACK
+	bool			is_dcjack_acok;
+	bool			is_usb_acok;
+	struct mutex		dcjack_lock;
+	bool			typec_mode_change_ignored;
+	bool			dcjack_removed_psy_changed_notifier_lock;
+	bool			non_compliance_pd_hard_reset;
+#endif
+	/* TypeC OTG vbus */
+	bool			otg_gpio_active;
+	u32			otg_vbus_gpio;
+        /* TypeC OTG vconn */
+        bool                    otg_vconn_gpio_active;
+        u32                     otg_vconn_gpio;
 };
 
 int smblib_read(struct smb_charger *chg, u16 addr, u8 *val);
@@ -586,7 +624,7 @@ irqreturn_t wdog_bark_irq_handler(int irq, void *data);
 irqreturn_t typec_or_rid_detection_change_irq_handler(int irq, void *data);
 irqreturn_t temp_change_irq_handler(int irq, void *data);
 irqreturn_t usbin_ov_irq_handler(int irq, void *data);
-
+irqreturn_t sdam_sts_change_irq_handler(int irq, void *data);
 int smblib_get_prop_input_suspend(struct smb_charger *chg,
 				union power_supply_propval *val);
 int smblib_get_prop_batt_present(struct smb_charger *chg,
@@ -632,8 +670,11 @@ int smblib_get_prop_dc_voltage_now(struct smb_charger *chg,
 				union power_supply_propval *val);
 int smblib_get_prop_dc_voltage_max(struct smb_charger *chg,
 				union power_supply_propval *val);
+int smblib_get_prop_voltage_wls_output(struct smb_charger *chg,
+				union power_supply_propval *val);
 int smblib_set_prop_voltage_wls_output(struct smb_charger *chg,
 				const union power_supply_propval *val);
+int smblib_set_prop_dc_reset(struct smb_charger *chg);
 int smblib_get_prop_usb_present(struct smb_charger *chg,
 				union power_supply_propval *val);
 int smblib_get_prop_usb_online(struct smb_charger *chg,
@@ -642,6 +683,10 @@ int smblib_get_prop_usb_suspend(struct smb_charger *chg,
 				union power_supply_propval *val);
 int smblib_get_prop_usb_voltage_max(struct smb_charger *chg,
 				union power_supply_propval *val);
+int smblib_get_prop_usb_voltage_max_design(struct smb_charger *chg,
+				union power_supply_propval *val);
+int smblib_set_prop_usb_voltage_max_limit(struct smb_charger *chg,
+				const union power_supply_propval *val);
 int smblib_get_prop_usb_voltage_now(struct smb_charger *chg,
 				union power_supply_propval *val);
 int smblib_get_prop_low_power(struct smb_charger *chg,
@@ -716,9 +761,26 @@ enum alarmtimer_restart smblib_lpd_recheck_timer(struct alarm *alarm,
 				ktime_t time);
 int smblib_toggle_smb_en(struct smb_charger *chg, int toggle);
 void smblib_hvdcp_detect_enable(struct smb_charger *chg, bool enable);
+void smblib_hvdcp_exit_config(struct smb_charger *chg);
 void smblib_apsd_enable(struct smb_charger *chg, bool enable);
 int smblib_force_vbus_voltage(struct smb_charger *chg, u8 val);
+int smblib_get_irq_status(struct smb_charger *chg,
+				union power_supply_propval *val);
 
 int smblib_init(struct smb_charger *chg);
 int smblib_deinit(struct smb_charger *chg);
+
+#ifdef CONFIG_HTC_BATT
+struct htc_battery_smb5_reg_ctrl;
+
+void smb5_set_htc_battery_smb5_ctrl(struct htc_battery_smb5_reg_ctrl *ctrl,void *func);
+void smblib_check_chg_enable(struct smb_charger *chg, union power_supply_propval *val);
+#ifdef CONFIG_HTC_BATT_DCJACK
+enum power_supply_type;
+int smblib_set_opt_switcher_freq(struct smb_charger *chg, int fsw_khz);
+int smblib_get_otg_vbus_gpio(struct smb_charger *chg);
+enum power_supply_type smblib_map_apsd_type2ps_type(int apsd_type);
+int smblib_get_noncompliance_cable(struct smb_charger *chg, union power_supply_propval *val);
+#endif // CONFIG_HTC_BATT_DCJACK
+#endif // CONFIG_HTC_BATT
 #endif /* __SMB5_CHARGER_H */
