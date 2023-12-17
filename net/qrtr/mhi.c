@@ -1,4 +1,4 @@
-/* Copyright (c) 2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -18,6 +18,9 @@
 #include <linux/of.h>
 
 #include "qrtr.h"
+//Modem_BSP++
+extern int modem_flag;
+//Modem_BSP--
 
 struct qrtr_mhi_dev {
 	struct qrtr_endpoint ep;
@@ -60,6 +63,14 @@ static void qcom_mhi_qrtr_dl_callback(struct mhi_device *mhi_dev,
 				mhi_res->bytes_xferd);
 	if (rc == -EINVAL)
 		dev_err(qdev->dev, "invalid ipcrouter packet\n");
+
+	//Modem_BSP++
+	else{
+		if (mhi_dev->dev.power.wakeup){
+			__pm_wakeup_event(mhi_dev->dev.power.wakeup, 0);
+		}
+	}
+	//Modem_BSP--
 }
 
 /* from mhi to qrtr */
@@ -117,7 +128,13 @@ static int qcom_mhi_qrtr_send(struct qrtr_endpoint *ep, struct sk_buff *skb)
 	if (skb->sk)
 		sock_hold(skb->sk);
 
-	rc = wait_for_completion_interruptible_timeout(&pkt->done, HZ * 5);
+	//Modem_BSP++
+	if (modem_flag)
+		rc = wait_for_completion_interruptible_timeout(&pkt->done, HZ * 1);
+	else
+	//Modem_BSP--
+		rc = wait_for_completion_interruptible_timeout(&pkt->done, HZ * 5);
+
 	if (rc > 0)
 		rc = 0;
 	else if (rc == 0)
@@ -132,6 +149,7 @@ static int qcom_mhi_qrtr_probe(struct mhi_device *mhi_dev,
 {
 	struct qrtr_mhi_dev *qdev;
 	u32 net_id;
+	bool rt;
 	int rc;
 
 	qdev = devm_kzalloc(&mhi_dev->dev, sizeof(*qdev), GFP_KERNEL);
@@ -146,10 +164,12 @@ static int qcom_mhi_qrtr_probe(struct mhi_device *mhi_dev,
 	if (rc < 0)
 		net_id = QRTR_EP_NET_ID_AUTO;
 
+	rt = of_property_read_bool(mhi_dev->dev.of_node, "qcom,low-latency");
+
 	INIT_LIST_HEAD(&qdev->ul_pkts);
 	spin_lock_init(&qdev->ul_lock);
 
-	rc = qrtr_endpoint_register(&qdev->ep, net_id);
+	rc = qrtr_endpoint_register(&qdev->ep, net_id, rt);
 	if (rc)
 		return rc;
 
