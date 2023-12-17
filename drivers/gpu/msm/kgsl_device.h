@@ -66,6 +66,7 @@ enum kgsl_event_results {
 };
 
 #define KGSL_FLAG_WAKE_ON_TOUCH BIT(0)
+#define KGSL_FLAG_SPARSE        BIT(1)
 
 /*
  * "list" of event types for ftrace symbolic magic
@@ -559,11 +560,13 @@ struct kgsl_snapshot_object {
 struct kgsl_device *kgsl_get_device(int dev_idx);
 
 static inline void kgsl_process_add_stats(struct kgsl_process_private *priv,
-	unsigned int type, uint64_t size)
+				unsigned int type, uint64_t size)
 {
+	spin_lock(&priv->mem_lock);
 	priv->stats[type].cur += size;
 	if (priv->stats[type].max < priv->stats[type].cur)
 		priv->stats[type].max = priv->stats[type].cur;
+	spin_unlock(&priv->mem_lock);
 }
 
 static inline bool kgsl_is_register_offset(struct kgsl_device *device,
