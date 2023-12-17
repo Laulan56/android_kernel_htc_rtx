@@ -85,6 +85,7 @@ enum gsi_ep_op {
  * @db_reg_phs_addr_msb: IPA channel doorbell register's physical address MSB
  * @sgt_trb_xfer_ring: USB TRB ring related sgtable entries
  * @sgt_data_buff: Data buffer related sgtable entries
+ * @dev: pointer to the DMA-capable dwc device
  */
 struct usb_gsi_request {
 	void *buf_base_addr;
@@ -96,6 +97,7 @@ struct usb_gsi_request {
 	u32 db_reg_phs_addr_msb;
 	struct sg_table sgt_trb_xfer_ring;
 	struct sg_table sgt_data_buff;
+	struct device *dev;
 };
 
 /*
@@ -1130,6 +1132,10 @@ extern void usb_ep_autoconfig_reset(struct usb_gadget *);
 extern struct usb_ep *usb_ep_autoconfig_by_name(struct usb_gadget *gadget,
 			struct usb_endpoint_descriptor *desc,
 			const char *ep_name);
+
+enum {
+	PROPERTY_CHG_STATUS = 0,
+};
 
 #ifdef CONFIG_USB_DWC3_MSM
 int msm_ep_config(struct usb_ep *ep, struct usb_request *request);

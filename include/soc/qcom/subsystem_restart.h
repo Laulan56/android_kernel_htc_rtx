@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -32,6 +32,13 @@ enum crash_status {
 	CRASH_STATUS_WDOG_BITE,
 };
 
+#if defined(CONFIG_HTC_FEATURES_SSR)
+enum {
+	DISABLE_RAMDUMP = 0,
+	ENABLE_RAMDUMP,
+};
+#endif
+
 struct device;
 struct module;
 
@@ -63,7 +70,12 @@ struct subsys_notif_timeout {
  * struct subsys_desc - subsystem descriptor
  * @name: name of subsystem
  * @fw_name: firmware name
- * @depends_on: subsystem this subsystem depends on to operate
+ * @pon_depends_on: subsystem this subsystem wants to power-on first. If the
+ * dependednt subsystem is already powered-on, the framework won't try to power
+ * it back up again.
+ * @poff_depends_on: subsystem this subsystem wants to power-off first. If the
+ * dependednt subsystem is already powered-off, the framework won't try to power
+ * it off again.
  * @dev: parent device
  * @owner: module the descriptor belongs to
  * @shutdown: Stop a subsystem
@@ -87,7 +99,8 @@ struct subsys_notif_timeout {
 struct subsys_desc {
 	const char *name;
 	char fw_name[256];
-	const char *depends_on;
+	const char *pon_depends_on;
+	const char *poff_depends_on;
 	struct device *dev;
 	struct module *owner;
 
@@ -146,6 +159,35 @@ struct notif_data {
 
 #if defined(CONFIG_MSM_SUBSYSTEM_RESTART)
 
+#if defined(CONFIG_HTC_DEBUG_SSR)
+#define SUBSYS_NAME_MAX_LENGTH 40
+void subsys_set_restart_reason(struct subsys_device *dev, const char *reason);
+#endif /* CONFIG_HTC_DEBUG_SSR  */
+
+#if defined(CONFIG_HTC_FEATURES_SSR)
+extern void subsys_set_enable_ramdump(struct subsys_device *dev, int enable);
+extern void subsys_set_restart_level(struct subsys_device *dev, int level);
+extern void subsys_config_modem_enable_ramdump(struct subsys_device *dev);
+extern void subsys_config_modem_restart_level(struct subsys_device *dev);
+extern void subsys_config_esoc0_enable_ramdump(struct subsys_device *dev);
+extern void subsys_config_esoc0_restart_level(struct subsys_device *dev);
+#endif
+
+#if defined(CONFIG_HTC_FEATURES_SSR)
+void subsys_config_enable_ramdump(struct subsys_device *dev);
+void subsys_config_restart_level(struct subsys_device *dev);
+#else
+static inline void subsys_config_enable_ramdump(struct subsys_device *dev)
+{
+	return;
+}
+
+static inline void subsys_config_restart_level(struct subsys_device *dev)
+{
+	return;
+}
+#endif
+
 extern int subsys_get_restart_level(struct subsys_device *dev);
 extern int subsystem_restart_dev(struct subsys_device *dev);
 extern int subsystem_restart(const char *name);
@@ -155,6 +197,7 @@ extern void *subsystem_get(const char *name);
 extern void *subsystem_get_with_fwname(const char *name, const char *fw_name);
 extern int subsystem_set_fwname(const char *name, const char *fw_name);
 extern void subsystem_put(void *subsystem);
+extern int subsys_get_state(struct subsys_device *dev);
 
 extern struct subsys_device *subsys_register(struct subsys_desc *desc);
 extern void subsys_unregister(struct subsys_device *dev);
