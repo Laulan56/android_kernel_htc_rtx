@@ -748,6 +748,9 @@ static irqreturn_t qti_haptics_play_irq_handler(int irq, void *data)
 			chip->play_irq_en = false;
 		}
 
+		/* Clear PLAY after all pattern bytes are queued */
+		qti_haptics_play(chip, false);
+
 		goto handled;
 	}
 
@@ -959,10 +962,6 @@ static int qti_haptics_playback(struct input_dev *dev, int effect_id, int val)
 				enable_irq(chip->play_irq);
 				chip->play_irq_en = true;
 			}
-			/* Toggle PLAY when playing pattern */
-			rc = qti_haptics_play(chip, false);
-			if (rc < 0)
-				return rc;
 		} else {
 			if (chip->play_irq_en) {
 				disable_irq_nosync(chip->play_irq);
@@ -1103,8 +1102,11 @@ static int qti_haptics_hw_init(struct qti_hap_chip *chip)
 	 * Skip configurations below for ERM actuator
 	 * as they're only for LRA actuators
 	 */
-	if (config->act_type == ACT_ERM)
-		return 0;
+	if (config->act_type == ACT_ERM) {
+		/* Disable AUTO_RES for ERM */
+		rc = qti_haptics_lra_auto_res_enable(chip, false);
+		return rc;
+	}
 
 	addr = REG_HAP_CFG2;
 	val = config->lra_shape;
