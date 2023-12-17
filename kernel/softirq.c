@@ -29,6 +29,7 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/irq.h>
+#include <linux/msm_rtb.h>
 
 /*
    - No shared variables, all the data are CPU local.
@@ -289,6 +290,7 @@ restart:
 		kstat_incr_softirqs_this_cpu(vec_nr);
 
 		trace_softirq_entry(vec_nr);
+		uncached_logk(LOGK_SOFTIRQ, (void *)(h->action));
 		h->action(h);
 		trace_softirq_exit(vec_nr);
 		if (unlikely(prev_count != preempt_count())) {
@@ -514,7 +516,9 @@ static __latent_entropy void tasklet_action(struct softirq_action *a)
 				if (!test_and_clear_bit(TASKLET_STATE_SCHED,
 							&t->state))
 					BUG();
+				trace_tasklet_entry(t->func);
 				t->func(t->data);
+				trace_tasklet_exit(t->func);
 				tasklet_unlock(t);
 				continue;
 			}
@@ -550,7 +554,9 @@ static __latent_entropy void tasklet_hi_action(struct softirq_action *a)
 				if (!test_and_clear_bit(TASKLET_STATE_SCHED,
 							&t->state))
 					BUG();
+				trace_tasklet_hi_entry(t->func);
 				t->func(t->data);
+				trace_tasklet_hi_exit(t->func);
 				tasklet_unlock(t);
 				continue;
 			}
