@@ -680,6 +680,7 @@ static int __cam_req_mgr_check_sync_for_mslave(
 	struct cam_req_mgr_slot      *sync_slot = NULL;
 	int sync_slot_idx = 0, prev_idx, next_idx, rd_idx, sync_rd_idx, rc = 0;
 	int64_t req_id = 0, sync_req_id = 0;
+	int32_t sync_num_slots = 0;
 
 	if (!link->sync_link) {
 		CAM_ERR(CAM_CRM, "Sync link null");
@@ -688,6 +689,7 @@ static int __cam_req_mgr_check_sync_for_mslave(
 
 	sync_link = link->sync_link;
 	req_id = slot->req_id;
+	sync_num_slots = sync_link->req.in_q->num_slots;
 	sync_rd_idx = sync_link->req.in_q->rd_idx;
 
 	CAM_DBG(CAM_CRM,
@@ -765,7 +767,8 @@ static int __cam_req_mgr_check_sync_for_mslave(
 
 			if ((sync_link->req.in_q->slot[sync_slot_idx].status !=
 				CRM_SLOT_STATUS_REQ_APPLIED) &&
-				((sync_slot_idx - rd_idx) >= 1) &&
+				(((sync_slot_idx - rd_idx + sync_num_slots) %
+				sync_num_slots) >= 1) &&
 				(sync_link->req.in_q->slot[rd_idx].status !=
 				CRM_SLOT_STATUS_REQ_APPLIED)) {
 				CAM_DBG(CAM_CRM,
@@ -831,7 +834,8 @@ static int __cam_req_mgr_check_sync_for_mslave(
 
 			if ((sync_link->req.in_q->slot[sync_slot_idx].status !=
 				CRM_SLOT_STATUS_REQ_APPLIED) &&
-				((sync_slot_idx - rd_idx) >= 1) &&
+				(((sync_slot_idx - rd_idx + sync_num_slots) %
+				sync_num_slots) >= 1) &&
 				(sync_link->req.in_q->slot[rd_idx].status !=
 				CRM_SLOT_STATUS_REQ_APPLIED)) {
 				CAM_DBG(CAM_CRM,
@@ -888,6 +892,7 @@ static int __cam_req_mgr_check_sync_req_is_ready(
 	struct cam_req_mgr_core_link *sync_link = NULL;
 	int64_t req_id = 0;
 	int sync_slot_idx = 0, sync_rd_idx = 0, rc = 0;
+	int32_t sync_num_slots = 0;
 
 	if (!link->sync_link) {
 		CAM_ERR(CAM_CRM, "Sync link null");
@@ -896,6 +901,7 @@ static int __cam_req_mgr_check_sync_req_is_ready(
 
 	sync_link = link->sync_link;
 	req_id = slot->req_id;
+	sync_num_slots = sync_link->req.in_q->num_slots;
 
 	CAM_DBG(CAM_REQ,
 		"link_hdl %x req %lld frame_skip_flag %d ",
@@ -940,7 +946,8 @@ static int __cam_req_mgr_check_sync_req_is_ready(
 	sync_rd_idx = sync_link->req.in_q->rd_idx;
 	if ((sync_link->req.in_q->slot[sync_slot_idx].status !=
 		CRM_SLOT_STATUS_REQ_APPLIED) &&
-		((sync_slot_idx - sync_rd_idx) >= 1) &&
+		(((sync_slot_idx - sync_rd_idx + sync_num_slots) %
+		sync_num_slots) >= 1) &&
 		(sync_link->req.in_q->slot[sync_rd_idx].status !=
 		CRM_SLOT_STATUS_REQ_APPLIED)) {
 		CAM_DBG(CAM_CRM,
@@ -989,6 +996,7 @@ static int __cam_req_mgr_process_req(struct cam_req_mgr_core_link *link,
 	uint32_t trigger)
 {
 	int                                  rc = 0, idx;
+	int                                  reset_step = 0;
 	struct cam_req_mgr_slot             *slot = NULL;
 	struct cam_req_mgr_req_queue        *in_q;
 	struct cam_req_mgr_core_session     *session;
@@ -1121,8 +1129,15 @@ static int __cam_req_mgr_process_req(struct cam_req_mgr_core_link *link,
 				slot->req_id,
 				link->link_hdl);
 			idx = in_q->rd_idx;
+			reset_step = link->max_delay;
+			if (link->sync_link) {
+				if ((link->in_msync_mode) &&
+					(link->sync_link->is_master))
+					reset_step =
+						link->sync_link->max_delay;
+			}
 			__cam_req_mgr_dec_idx(
-				&idx, link->max_delay + 1,
+				&idx, reset_step + 1,
 				in_q->num_slots);
 			__cam_req_mgr_reset_req_slot(link, idx);
 		}
@@ -1878,7 +1893,9 @@ int cam_req_mgr_process_add_req(void *priv, void *data)
 	mutex_lock(&link->req.lock);
 	idx = __cam_req_mgr_find_slot_for_req(link->req.in_q, add_req->req_id);
 	if (idx < 0) {
-		CAM_ERR(CAM_CRM, "req %lld not found in in_q", add_req->req_id);
+		CAM_ERR(CAM_CRM,
+			"req %lld not found in in_q for dev %s on link 0x%x",
+			add_req->req_id, device->dev_info.name, link->link_hdl);
 		rc = -EBADSLT;
 		mutex_unlock(&link->req.lock);
 		goto end;
@@ -1898,8 +1915,10 @@ int cam_req_mgr_process_add_req(void *priv, void *data)
 
 	if (slot->state != CRM_REQ_STATE_PENDING &&
 		slot->state != CRM_REQ_STATE_EMPTY) {
-		CAM_WARN(CAM_CRM, "Unexpected state %d for slot %d map %x",
-			slot->state, idx, slot->req_ready_map);
+		CAM_WARN(CAM_CRM,
+			"Unexpected state %d for slot %d map %x for dev %s on link 0x%x",
+			slot->state, idx, slot->req_ready_map,
+			device->dev_info.name, link->link_hdl);
 	}
 
 	slot->state = CRM_REQ_STATE_PENDING;
