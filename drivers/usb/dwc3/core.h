@@ -855,8 +855,9 @@ struct dwc3_scratchpad_array {
 #define DWC3_GSI_EVT_BUF_ALLOC			10
 #define DWC3_GSI_EVT_BUF_SETUP			11
 #define DWC3_GSI_EVT_BUF_CLEANUP		12
-#define DWC3_GSI_EVT_BUF_FREE			13
-#define DWC3_CONTROLLER_NOTIFY_CLEAR_DB		14
+#define DWC3_GSI_EVT_BUF_CLEAR			13
+#define DWC3_GSI_EVT_BUF_FREE			14
+#define DWC3_CONTROLLER_NOTIFY_CLEAR_DB		15
 
 #define MAX_INTR_STATS				10
 
@@ -1177,6 +1178,8 @@ struct dwc3 {
 	unsigned int		index;
 	void			*dwc_ipc_log_ctxt;
 	struct dwc3_gadget_events	dbg_gadget_events;
+	bool			usb_disable;
+	void			(*notify_usb_disabled)(void);
 	u32			xhci_imod_value;
 	int			core_id;
 	int			tx_fifo_size;
