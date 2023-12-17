@@ -66,6 +66,59 @@ static const struct drm_prop_enum_list e_qsync_mode[] = {
 	{SDE_RM_QSYNC_CONTINUOUS_MODE,	"continuous"},
 };
 
+/**
+ * sde_backlight_trans() -  Transfer framework brightness level to backlight level.
+ * Ref htc,brt-bl-table to map Brightness level and BL level.
+ */
+static int sde_backlight_trans(int brightness, struct dsi_panel *panel)
+{
+	int ret, i;
+	int min = 0, max = 4095;
+	struct dsi_backlight_config *bl = &panel->bl_config;
+
+	if (!bl->bl_map_size)
+		return brightness;
+
+	min = BL_MAP_FIRST(bl->bl_map[0]);
+	max = BL_MAP_FIRST(bl->bl_map[bl->bl_map_size - 1]);
+
+	if (brightness <= 0) {
+		ret = 0;
+	} else if (brightness <= min) {
+		ret = BL_MAP_SECOND(bl->bl_map[0]);
+	} else if (brightness >= max) {
+		ret = BL_MAP_SECOND(bl->bl_map[bl->bl_map_size - 1]);
+	} else {
+		/* Interpolation method */
+		ret = brightness;
+		for(i = 0; i < bl->bl_map_size - 1; i++) {
+			if (brightness >= BL_MAP_FIRST(bl->bl_map[i]) && brightness <= BL_MAP_FIRST(bl->bl_map[i + 1])) {
+				int x0 = BL_MAP_FIRST(bl->bl_map[i]);
+				int y0 = BL_MAP_SECOND(bl->bl_map[i]);
+				int x1 = BL_MAP_FIRST(bl->bl_map[i + 1]);
+				int y1 = BL_MAP_SECOND(bl->bl_map[i + 1]);
+
+				if (x0 == x1)
+					ret = y0;
+				else
+					ret = y0 + (y1 - y0) * (brightness - x0) / (x1 - x0);
+
+				break;
+			}
+		}
+	}
+
+	if (bl->bl_cali_en) {
+		ret = ret * bl->bl_cali_scale / BL_CALI_SCALE_DENOMINATOR;
+		if (ret > bl->bl_max_level)
+			ret = bl->bl_max_level;
+	}
+
+	pr_debug("%d => %d, cali_scale=%u\n", brightness, ret, bl->bl_cali_scale);
+
+	return ret;
+}
+
 static int sde_backlight_device_update_status(struct backlight_device *bd)
 {
 	int brightness;
@@ -87,9 +140,13 @@ static int sde_backlight_device_update_status(struct backlight_device *bd)
 	if (brightness > display->panel->bl_config.bl_max_level)
 		brightness = display->panel->bl_config.bl_max_level;
 
-	/* map UI brightness into driver backlight level with rounding */
-	bl_lvl = mult_frac(brightness, display->panel->bl_config.bl_max_level,
-			display->panel->bl_config.brightness_max_level);
+	if (display->panel->bl_config.bl_map_size) {
+		bl_lvl = sde_backlight_trans(brightness, display->panel);
+	} else {
+		/* map UI brightness into driver backlight level with rounding */
+		bl_lvl = mult_frac(brightness, display->panel->bl_config.bl_max_level,
+				display->panel->bl_config.brightness_max_level);
+	}
 
 	if (!bl_lvl && brightness)
 		bl_lvl = 1;
@@ -140,7 +197,7 @@ static int sde_backlight_setup(struct sde_connector *c_conn,
 	}
 
 	memset(&props, 0, sizeof(props));
-	props.type = BACKLIGHT_RAW;
+	props.type = BACKLIGHT_PLATFORM;
 	props.power = FB_BLANK_UNBLANK;
 
 	display = (struct dsi_display *) c_conn->display;
@@ -1325,14 +1382,14 @@ void sde_connector_commit_reset(struct drm_connector *connector, ktime_t ts)
 static void sde_connector_update_hdr_props(struct drm_connector *connector)
 {
 	struct sde_connector *c_conn = to_sde_connector(connector);
-	struct drm_msm_ext_hdr_properties hdr = {
-		connector->hdr_metadata_type_one,
-		connector->hdr_supported,
-		connector->hdr_eotf,
-		connector->hdr_max_luminance,
-		connector->hdr_avg_luminance,
-		connector->hdr_min_luminance,
-	};
+	struct drm_msm_ext_hdr_properties hdr = {0};
+
+	hdr.hdr_metadata_type_one = connector->hdr_metadata_type_one ? 1 : 0;
+	hdr.hdr_supported = connector->hdr_supported ? 1 : 0;
+	hdr.hdr_eotf = connector->hdr_eotf;
+	hdr.hdr_max_luminance = connector->hdr_max_luminance;
+	hdr.hdr_avg_luminance = connector->hdr_avg_luminance;
+	hdr.hdr_min_luminance = connector->hdr_min_luminance;
 
 	msm_property_set_blob(&c_conn->property_info, &c_conn->blob_ext_hdr,
 			&hdr, sizeof(hdr), CONNECTOR_PROP_EXT_HDR_INFO);
@@ -1819,7 +1876,8 @@ static int sde_connector_atomic_check(struct drm_connector *connector,
 	return 0;
 }
 
-static void _sde_connector_report_panel_dead(struct sde_connector *conn)
+static void _sde_connector_report_panel_dead(struct sde_connector *conn,
+	bool skip_pre_kickoff)
 {
 	struct drm_event event;
 
@@ -1839,7 +1897,8 @@ static void _sde_connector_report_panel_dead(struct sde_connector *conn)
 	event.length = sizeof(bool);
 	msm_mode_object_event_notify(&conn->base.base,
 		conn->base.dev, &event, (u8 *)&conn->panel_dead);
-	sde_encoder_display_failure_notification(conn->encoder);
+	sde_encoder_display_failure_notification(conn->encoder,
+		skip_pre_kickoff);
 	SDE_EVT32(SDE_EVTLOG_ERROR);
 	SDE_ERROR("esd check failed report PANEL_DEAD conn_id: %d enc_id: %d\n",
 			conn->base.base.id, conn->encoder->base.id);
@@ -1874,7 +1933,7 @@ int sde_connector_esd_status(struct drm_connector *conn)
 	if (ret <= 0) {
 		/* cancel if any pending esd work */
 		sde_connector_schedule_status_work(conn, false);
-		_sde_connector_report_panel_dead(sde_conn);
+		_sde_connector_report_panel_dead(sde_conn, true);
 		ret = -ETIMEDOUT;
 	} else {
 		SDE_DEBUG("Successfully received TE from panel\n");
@@ -1922,7 +1981,7 @@ static void sde_connector_check_status_work(struct work_struct *work)
 		return;
 	}
 
-	_sde_connector_report_panel_dead(conn);
+	_sde_connector_report_panel_dead(conn, false);
 }
 
 static const struct drm_connector_helper_funcs sde_connector_helper_ops = {
