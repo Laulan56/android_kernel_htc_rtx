@@ -139,6 +139,8 @@ Optional properties:
 					0 = default value
 - qcom,mdss-dsi-v-bottom-border:	Vertical bottom border in pixel.
 					0 = default value
+- qcom,mdss-dsi-overlap-pixels:		Horizontal overlap pixels for certain panels.
+					0 = default value
 - qcom,mdss-dsi-underflow-color:	Specifies the controller settings for the
 					panel under flow color.
 					0xff = default value.
@@ -546,6 +548,11 @@ Optional properties:
 					is supported.
 - qcom,dsi-dyn-clk-list:		An u32 array which lists all the supported dsi bit clock
 					frequencies in Hz for the given panel.
+
+- htc,brt-bl-table:             	An array that specifies the brightness and backlight bl mapping table.
+					Each set will have the format defined as below:
+					--> brightness level:[0,255]
+					--> bl level:(DDIC, PWM)[0,255] or (PMIC WLED)[0,4095]
 
 Required properties for sub-nodes:	None
 Optional properties:
