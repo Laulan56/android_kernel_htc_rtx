@@ -3,7 +3,6 @@
  *
  * Copyright (C) 2012-2016 Synaptics Incorporated. All rights reserved.
  *
- * Copyright (c) 2018-2019 The Linux Foundation. All rights reserved.
  * Copyright (C) 2012 Alexandra Chin <alexandra.chin@tw.synaptics.com>
  * Copyright (C) 2012 Scott Lin <scott.lin@tw.synaptics.com>
  *
@@ -41,7 +40,7 @@
 #include <linux/ctype.h>
 #include <linux/hrtimer.h>
 #include <linux/platform_device.h>
-#include <linux/input/synaptics_dsx.h>
+#include <linux/input/synaptics_dsx_htc.h>
 #include "synaptics_dsx_core.h"
 
 #define SYSFS_FOLDER_NAME "f54"
@@ -225,7 +224,7 @@ static ssize_t concat(test_sysfs, _##propname##_show)(\
 		char *buf);\
 \
 static struct device_attribute dev_attr_##propname =\
-		__ATTR(propname, 0444,\
+		__ATTR(propname, S_IRUGO,\
 		concat(test_sysfs, _##propname##_show),\
 		synaptics_rmi4_store_error);
 
@@ -236,7 +235,7 @@ static ssize_t concat(test_sysfs, _##propname##_store)(\
 		const char *buf, size_t count);\
 \
 static struct device_attribute dev_attr_##propname =\
-		__ATTR(propname, 0220,\
+		__ATTR(propname, (S_IWUSR | S_IWGRP),\
 		synaptics_rmi4_show_error,\
 		concat(test_sysfs, _##propname##_store));
 
@@ -252,7 +251,7 @@ static ssize_t concat(test_sysfs, _##propname##_store)(\
 		const char *buf, size_t count);\
 \
 static struct device_attribute dev_attr_##propname =\
-		__ATTR(propname, 0664,\
+		__ATTR(propname, (S_IRUGO | S_IWUSR | S_IWGRP),\
 		concat(test_sysfs, _##propname##_show),\
 		concat(test_sysfs, _##propname##_store));
 
@@ -1462,7 +1461,7 @@ static ssize_t test_sysfs_data_read(struct file *data_file,
 static struct bin_attribute test_report_data = {
 	.attr = {
 		.name = "report_data",
-		.mode = 0444,
+		.mode = S_IRUGO,
 	},
 	.size = 0,
 	.read = test_sysfs_data_read,
@@ -4694,31 +4693,25 @@ static void test_f55_init(struct synaptics_rmi4_data *rmi4_data)
 	unsigned char ii;
 	unsigned char rx_electrodes;
 	unsigned char tx_electrodes;
-	struct f55_control_43 *ctrl_43 = NULL;
-
-	ctrl_43 = kzalloc(sizeof(*ctrl_43), GFP_KERNEL);
-	if (!ctrl_43) {
-		retval = -ENOMEM;
-		goto exit;
-	}
+	struct f55_control_43 ctrl_43;
 
 	retval = test_f55_set_queries();
 	if (retval < 0) {
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: Failed to read F55 query registers\n",
 				__func__);
-		goto exit;
+		return;
 	}
 
 	if (!f55->query.has_sensor_assignment)
-		goto exit;
+		return;
 
 	retval = test_f55_set_controls();
 	if (retval < 0) {
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: Failed to set up F55 control registers\n",
 				__func__);
-		goto exit;
+		return;
 	}
 
 	tx_electrodes = f55->query.num_of_tx_electrodes;
@@ -4735,7 +4728,7 @@ static void test_f55_init(struct synaptics_rmi4_data *rmi4_data)
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: Failed to read F55 tx assignment\n",
 				__func__);
-		goto exit;
+		return;
 	}
 
 	retval = synaptics_rmi4_reg_read(rmi4_data,
@@ -4746,7 +4739,7 @@ static void test_f55_init(struct synaptics_rmi4_data *rmi4_data)
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: Failed to read F55 rx assignment\n",
 				__func__);
-		goto exit;
+		return;
 	}
 
 	f54->tx_assigned = 0;
@@ -4769,17 +4762,17 @@ static void test_f55_init(struct synaptics_rmi4_data *rmi4_data)
 	if (f55->extended_amp) {
 		retval = synaptics_rmi4_reg_read(rmi4_data,
 				f55->control_base_addr + f55->afe_mux_offset,
-				ctrl_43->data,
-				sizeof(ctrl_43->data));
+				ctrl_43.data,
+				sizeof(ctrl_43.data));
 		if (retval < 0) {
 			dev_err(rmi4_data->pdev->dev.parent,
 					"%s: Failed to read F55 AFE mux sizes\n",
 					__func__);
-			goto exit;
+			return;
 		}
 
-		f54->tx_assigned = ctrl_43->afe_l_mux_size +
-				ctrl_43->afe_r_mux_size;
+		f54->tx_assigned = ctrl_43.afe_l_mux_size +
+				ctrl_43.afe_r_mux_size;
 	}
 
 	/* force mapping */
@@ -4795,7 +4788,7 @@ static void test_f55_init(struct synaptics_rmi4_data *rmi4_data)
 			dev_err(rmi4_data->pdev->dev.parent,
 					"%s: Failed to read F55 force tx assignment\n",
 					__func__);
-			goto exit;
+			return;
 		}
 
 		retval = synaptics_rmi4_reg_read(rmi4_data,
@@ -4806,7 +4799,7 @@ static void test_f55_init(struct synaptics_rmi4_data *rmi4_data)
 			dev_err(rmi4_data->pdev->dev.parent,
 					"%s: Failed to read F55 force rx assignment\n",
 					__func__);
-			goto exit;
+			return;
 		}
 
 		for (ii = 0; ii < tx_electrodes; ii++) {
@@ -4820,8 +4813,6 @@ static void test_f55_init(struct synaptics_rmi4_data *rmi4_data)
 		}
 	}
 
-exit:
-	kfree(ctrl_43);
 	return;
 }
 
@@ -5018,6 +5009,7 @@ static int test_scan_pdt(void)
 	unsigned short addr;
 	bool f54found = false;
 	bool f55found = false;
+	struct synaptics_rmi4_fn_desc rmi_fd;
 	struct synaptics_rmi4_data *rmi4_data = f54->rmi4_data;
 
 	for (page = 0; page < PAGES_TO_SERVICE; page++) {
@@ -5026,31 +5018,30 @@ static int test_scan_pdt(void)
 
 			retval = synaptics_rmi4_reg_read(rmi4_data,
 					addr,
-					(unsigned char *)&rmi4_data->rmi_fd,
-					sizeof(rmi4_data->rmi_fd));
+					(unsigned char *)&rmi_fd,
+					sizeof(rmi_fd));
 			if (retval < 0)
 				return retval;
 
 			addr &= ~(MASK_8BIT << 8);
 
-			if (!rmi4_data->rmi_fd.fn_number)
+			if (!rmi_fd.fn_number)
 				break;
 
-			switch (rmi4_data->rmi_fd.fn_number) {
+			switch (rmi_fd.fn_number) {
 			case SYNAPTICS_RMI4_F54:
 				test_f54_set_regs(rmi4_data,
-						&rmi4_data->rmi_fd, intr_count,
-						page);
+						&rmi_fd, intr_count, page);
 				f54found = true;
 				break;
 			case SYNAPTICS_RMI4_F55:
 				test_f55_set_regs(rmi4_data,
-						&rmi4_data->rmi_fd, page);
+						&rmi_fd, page);
 				f55found = true;
 				break;
 			case SYNAPTICS_RMI4_F21:
 				test_f21_set_regs(rmi4_data,
-						&rmi4_data->rmi_fd, page);
+						&rmi_fd, page);
 				break;
 			default:
 				break;
@@ -5059,7 +5050,7 @@ static int test_scan_pdt(void)
 			if (f54found && f55found)
 				goto pdt_done;
 
-			intr_count += rmi4_data->rmi_fd.intr_src_count;
+			intr_count += rmi_fd.intr_src_count;
 		}
 	}
 

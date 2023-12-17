@@ -3,7 +3,6 @@
  *
  * Copyright (C) 2012-2016 Synaptics Incorporated. All rights reserved.
  *
- * Copyright (c) 2018-2019 The Linux Foundation. All rights reserved.
  * Copyright (C) 2012 Alexandra Chin <alexandra.chin@tw.synaptics.com>
  * Copyright (C) 2012 Scott Lin <scott.lin@tw.synaptics.com>
  *
@@ -49,11 +48,18 @@
 #include <linux/earlysuspend.h>
 #endif
 
-#if defined(CONFIG_SECURE_TOUCH_SYNAPTICS_DSX)
-#include <linux/completion.h>
-#include <linux/atomic.h>
-#include <linux/pm_runtime.h>
-#include <linux/clk.h>
+#ifdef HTC_FEATURE
+#include <trace/events/power.h>		//systrace: trace_clock_set_rate()
+#ifdef CONFIG_TOUCHSCREEN_USE_DRM_NOTIFY
+#include <linux/notifier.h>
+#include <linux/msm_drm_notify.h>
+#endif
+#ifdef CONFIG_TOUCHSCREEN_USE_DSI_NOTIFY
+#include <linux/msm_htc_util.h>
+#endif
+#ifdef CONFIG_NANOHUB_TP_SWITCH
+#include <linux/nanohub_htc.h>
+#endif
 #endif
 
 #if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 38))
@@ -69,14 +75,61 @@
 #else
 #define sstrtoul(...) strict_strtoul(__VA_ARGS__)
 #endif
+
+#ifdef HTC_FEATURE
+#define dev_fm(fmt) "[TP]: " fmt
+#define dev_err_fm(fmt) "[TP][ERR]: " fmt
+
+#ifdef pr_info
+#undef pr_info
+#endif
+#define pr_info(fmt, ...)  printk(KERN_INFO dev_fm(fmt), ##__VA_ARGS__)
+
+#ifdef pr_notice
+#undef pr_notice
+#endif
+#define pr_notice(fmt, ...)  printk(KERN_INFO dev_fm(fmt), ##__VA_ARGS__)
+
+#ifdef pr_err
+#undef pr_err
+#endif
+#define pr_err(fmt, ...)  printk(KERN_ERR dev_err_fm(fmt), ##__VA_ARGS__)
+
 /*
-*#define F51_DISCRETE_FORCE
-*#ifdef F51_DISCRETE_FORCE
-*#define FORCE_LEVEL_ADDR 0x0419
-*#define FORCE_LEVEL_MAX 255
-*#define CAL_DATA_SIZE 144
-*#endif
-*#define SYNA_TDDI
+#ifdef dev_dbg
+#undef dev_dbg
+#endif
+#define dev_dbg(dev, fmt, ...) \
+do { if (dev) \
+	printk(KERN_DEBUG dev_fm(fmt), ##__VA_ARGS__); \
+} while (0)
+*/
+
+#ifdef dev_info
+#undef dev_info
+#endif
+#define dev_info(dev, fmt, ...)  \
+do { if (dev) \
+	printk(KERN_INFO dev_fm(fmt), ##__VA_ARGS__); \
+} while (0)
+
+#ifdef dev_err
+#undef dev_err
+#endif
+#define dev_err(dev, fmt, ...)  \
+do { if (dev) \
+	printk(KERN_ERR dev_err_fm(fmt), ##__VA_ARGS__); \
+} while (0)
+#endif
+
+/*
+#define F51_DISCRETE_FORCE
+#ifdef F51_DISCRETE_FORCE
+#define FORCE_LEVEL_ADDR 0x0419
+#define FORCE_LEVEL_MAX 255
+#define CAL_DATA_SIZE 144
+#endif
+#define SYNA_TDDI
 */
 #define PDT_PROPS (0X00EF)
 #define PDT_START (0x00E9)
@@ -102,6 +155,10 @@
 #define PRODUCT_INFO_SIZE 2
 #define PRODUCT_ID_SIZE 10
 #define BUILD_ID_SIZE 3
+#ifdef HTC_FEATURE
+#define CHIP_ID_SIZE 2
+#define CONFIG_ID_STRING_SIZE 65
+#endif
 
 #define F12_FINGERS_TO_SUPPORT 10
 #define F12_NO_OBJECT_STATUS 0x00
@@ -131,10 +188,6 @@
 #define MASK_3BIT 0x07
 #define MASK_2BIT 0x03
 #define MASK_1BIT 0x01
-
-#define PINCTRL_STATE_ACTIVE    "pmx_ts_active"
-#define PINCTRL_STATE_SUSPEND   "pmx_ts_suspend"
-#define PINCTRL_STATE_RELEASE   "pmx_ts_release"
 
 enum exp_fn {
 	RMI_DEV = 0,
@@ -219,6 +272,12 @@ struct synaptics_rmi4_f12_extra_data {
 	unsigned char data29_size;
 	unsigned char data29_data[F12_FINGERS_TO_SUPPORT * 2];
 	unsigned char ctrl20_offset;
+#ifdef HTC_FEATURE
+	unsigned char ctrl10_offset;
+	unsigned char ctrl15_offset;
+	unsigned char ctrl23_offset;
+	unsigned char ctrl56_offset;
+#endif
 };
 
 /*
@@ -289,21 +348,35 @@ struct synaptics_rmi4_device_info {
 	unsigned char product_props;
 	unsigned char product_info[PRODUCT_INFO_SIZE];
 	unsigned char product_id_string[PRODUCT_ID_SIZE + 1];
+#ifdef HTC_FEATURE
+	unsigned char package_id[CHIP_ID_SIZE];
+#endif
 	unsigned char build_id[BUILD_ID_SIZE];
 	struct list_head support_fn_list;
 };
 
-struct synaptics_rmi4_f01_device_status {
-	union {
-		struct {
-			unsigned char status_code:4;
-			unsigned char reserved:2;
-			unsigned char flash_prog:1;
-			unsigned char unconfigured:1;
-		} __packed;
-		unsigned char data[1];
-	};
+#ifdef HTC_FEATURE
+struct synaptics_rmi4_report_points {
+	unsigned char state;
+	int finger_ind;
+	int dnup;
+	int x;
+	int y;
+	int wx;
+	int wy;
+	int z;
 };
+
+struct synaptics_rmi4_noise_state {
+	uint16_t im;
+	uint16_t im_m;
+	uint16_t cidim;
+	uint16_t cidim_m;
+	uint8_t freq;
+	uint8_t ns;
+};
+#endif
+
 /*
  * struct synaptics_rmi4_data - RMI4 device instance data
  * @pdev: pointer to platform device
@@ -349,7 +422,6 @@ struct synaptics_rmi4_f01_device_status {
  * @sensor_max_y: maximum y coordinate for 2D touch
  * @force_min: minimum force value
  * @force_max: maximum force value
- * @set_wakeup_gesture: location of set wakeup gesture
  * @flash_prog_mode: flag to indicate flash programming mode status
  * @irq_enabled: flag to indicate attention interrupt enable status
  * @fingers_on_2d: flag to indicate presence of fingers in 2D area
@@ -371,16 +443,12 @@ struct synaptics_rmi4_f01_device_status {
  * @report_touch: pointer to touch reporting function
  */
 struct synaptics_rmi4_data {
-	bool initialized;
 	struct platform_device *pdev;
 	struct input_dev *input_dev;
 	struct input_dev *stylus_dev;
 	const struct synaptics_dsx_hw_interface *hw_if;
 	struct synaptics_rmi4_device_info rmi4_mod_info;
 	struct synaptics_rmi4_input_settings input_settings;
-	struct synaptics_rmi4_fn_desc rmi_fd;
-	struct synaptics_rmi4_fn_desc fd;
-	struct synaptics_rmi4_f01_device_status status;
 	struct kobject *board_prop_dir;
 	struct regulator *pwr_reg;
 	struct regulator *bus_reg;
@@ -391,17 +459,15 @@ struct synaptics_rmi4_data {
 	struct mutex rmi4_irq_enable_mutex;
 	struct delayed_work rb_work;
 	struct workqueue_struct *rb_workqueue;
-	struct work_struct rmi4_probe_work;
-	struct workqueue_struct *rmi4_probe_wq;
-	struct completion drm_init_done;
-	struct pinctrl *ts_pinctrl;
-	struct pinctrl_state *pinctrl_state_active;
-	struct pinctrl_state *pinctrl_state_suspend;
-	struct pinctrl_state *pinctrl_state_release;
 #ifdef CONFIG_FB
 	struct notifier_block fb_notifier;
 	struct work_struct reset_work;
 	struct workqueue_struct *reset_workqueue;
+#endif
+#ifdef HTC_FEATURE
+#ifdef CONFIG_TOUCHSCREEN_USE_DRM_NOTIFY
+	struct notifier_block drm_notifier;
+#endif
 #endif
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	struct early_suspend early_suspend;
@@ -423,18 +489,77 @@ struct synaptics_rmi4_data {
 	unsigned short f01_cmd_base_addr;
 	unsigned short f01_ctrl_base_addr;
 	unsigned short f01_data_base_addr;
+#ifdef HTC_FEATURE
+	unsigned short f51_query_base_addr;
+	unsigned short f51_cmd_base_addr;
+	unsigned short f51_ctrl_base_addr;
+	unsigned short f51_data_base_addr;
+#else
 #ifdef F51_DISCRETE_FORCE
 	unsigned short f51_query_base_addr;
 #endif
+#endif
 	unsigned int firmware_id;
+#ifdef HTC_FEATURE
+	unsigned int bl_version;
+	char config_id[CONFIG_ID_STRING_SIZE];
+	unsigned short f34_query_base_addr;
+	unsigned short f34_cmd_base_addr;
+	unsigned short f34_ctrl_base_addr;
+	unsigned short f34_data_base_addr;
+	unsigned short f54_query_base_addr;
+	unsigned short f54_cmd_base_addr;
+	unsigned short f54_ctrl_base_addr;
+	unsigned short f54_data_base_addr;
+	unsigned short f55_query_base_addr;
+	unsigned short f55_cmd_base_addr;
+	unsigned short f55_ctrl_base_addr;
+	unsigned short f55_data_base_addr;
+	uint16_t f51_set_pmic_offset;
+	uint16_t f54_im_offset;
+	uint16_t f54_ns_offset;
+	uint16_t f54_cidim_offset;
+	uint16_t f54_freq_offset;
+	uint16_t f54_ctrl113_address;
+	uint16_t f55_ctrl03_offset;
+	uint16_t chip_id;
+	unsigned char diag_command;
+	atomic_t data_ready;
+	int16_t *report_data;
+	int32_t *report_data_32;
+	uint8_t panel_ID;
+#define TOUCH_DEBUG_LOG		BIT(0)
+#define SHOW_INT_I2C_BUF		BIT(2)
+//Priority: Bit(3) > Bit(4) > Bit(5)
+#define TOUCH_DOWN_UP_LOG		BIT(3)	//Print Down/Up logs
+#define TOUCH_KPI_LOG			BIT(4)	//Print Down/Move/Up with interrupt received time and input_sync time
+#define TOUCH_BREAKDOWN_TIME		BIT(5)	//Print Down/Move/Up with total handling time and bus time
+#define TOUCH_BREAKDOWN_LOG		BIT(6)	//Print logs while enter or leave critical functions.
+	uint32_t debug_mask;
+	struct timespec tp_handler_time;
+	struct timespec tp_read_start_time;
+	struct timespec tp_read_done_time;
+	struct timespec tp_report_read_start_time;
+	struct timespec tp_report_read_done_time;
+	struct timespec tp_sync_time;
+	int factor_width;
+	int factor_height;
+	struct synaptics_rmi4_report_points report_points[10];
+	struct synaptics_rmi4_noise_state noise_state;
+	uint8_t glove_setting;	//TBD: sensitivity_setting (glove + cover)
+	uint8_t i2c_to_mcu;
+	bool tp_bus_sel_en;
+	bool touch_detect;
+#endif
+#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_ESD_DETECTION
+	bool skip_esd;
+	bool aod_mode;
+#endif
 	int irq;
 	int sensor_max_x;
 	int sensor_max_y;
 	int force_min;
 	int force_max;
-	int set_wakeup_gesture;
-	int avdd_status;
-	int vdd_status;
 	bool flash_prog_mode;
 	bool irq_enabled;
 	bool fingers_on_2d;
@@ -454,19 +579,10 @@ struct synaptics_rmi4_data {
 			bool rebuild);
 	int (*irq_enable)(struct synaptics_rmi4_data *rmi4_data, bool enable,
 			bool attn_only);
-	int (*sleep_enable)(struct synaptics_rmi4_data *rmi4_data,
+	void (*sleep_enable)(struct synaptics_rmi4_data *rmi4_data,
 			bool enable);
 	void (*report_touch)(struct synaptics_rmi4_data *rmi4_data,
 			struct synaptics_rmi4_fn *fhandler);
-#if defined(CONFIG_SECURE_TOUCH_SYNAPTICS_DSX)
-	atomic_t st_enabled;
-	atomic_t st_pending_irqs;
-	struct completion st_powerdown;
-	struct completion st_irq_processed;
-	bool st_initialized;
-	struct clk *core_clk;
-	struct clk *iface_clk;
-#endif
 };
 
 struct synaptics_dsx_bus_access {
@@ -475,8 +591,6 @@ struct synaptics_dsx_bus_access {
 		unsigned char *data, unsigned int length);
 	int (*write)(struct synaptics_rmi4_data *rmi4_data, unsigned short addr,
 		unsigned char *data, unsigned int length);
-	int (*get)(struct synaptics_rmi4_data *rmi4_data);
-	void (*put)(struct synaptics_rmi4_data *rmi4_data);
 };
 
 struct synaptics_dsx_hw_interface {
@@ -525,16 +639,6 @@ static inline int synaptics_rmi4_reg_write(
 		unsigned int len)
 {
 	return rmi4_data->hw_if->bus_access->write(rmi4_data, addr, data, len);
-}
-
-static inline int synaptics_rmi4_bus_get(struct synaptics_rmi4_data *rmi4_data)
-{
-	return rmi4_data->hw_if->bus_access->get(rmi4_data);
-}
-
-static inline void synaptics_rmi4_bus_put(struct synaptics_rmi4_data *rmi4_data)
-{
-	rmi4_data->hw_if->bus_access->put(rmi4_data);
 }
 
 static inline ssize_t synaptics_rmi4_show_error(struct device *dev,
