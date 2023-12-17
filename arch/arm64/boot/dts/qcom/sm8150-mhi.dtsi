@@ -229,6 +229,7 @@
 				mhi,ee = <0x4>;
 				mhi,auto-queue;
 				mhi,auto-start;
+				mhi,wake-capable;
 			};
 
 			mhi_chan@22 {
