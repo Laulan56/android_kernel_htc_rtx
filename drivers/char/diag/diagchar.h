@@ -22,6 +22,7 @@
 #include <linux/workqueue.h>
 #include <linux/sched.h>
 #include <linux/device.h>
+#include <linux/usb/usbdiag.h>
 #include <linux/atomic.h>
 #include "diagfwd_bridge.h"
 
@@ -55,6 +56,9 @@
 
 #define ALL_PROC		-1
 
+#define MODEM_PROC		0
+#define LPASS_PROC		2
+#define WCNSS_PROC		3
 #define REMOTE_DATA		4
 
 #define USER_SPACE_DATA		16384
@@ -296,6 +300,7 @@ do {						\
 #define DIAG_CNTL_TYPE		2
 #define DIAG_DCI_TYPE		3
 
+#define MAX_DCI_CLIENTS		10
 /*
  * List of diag ids
  * 0 is reserved for unknown diag id, 1 for apps, diag ids
@@ -308,8 +313,23 @@ do {						\
 enum remote_procs {
 	MDM = 1,
 	MDM2 = 2,
+	MDM3 = 3,
+	MDM4 = 4,
 	QSC = 5,
 };
+#define DIAG_MD_LOCAL		0
+#define DIAG_MD_LOCAL_LAST	1
+#define DIAG_MD_BRIDGE_BASE	DIAG_MD_LOCAL_LAST
+#define DIAG_MD_MDM		(DIAG_MD_BRIDGE_BASE)
+#define DIAG_MD_MDM2		(DIAG_MD_BRIDGE_BASE + 1)
+#define DIAG_MD_SMUX		(DIAG_MD_BRIDGE_BASE + 2)
+#define DIAG_MD_BRIDGE_LAST	(DIAG_MD_BRIDGE_BASE + 3)
+
+#ifndef CONFIG_DIAGFWD_BRIDGE_CODE
+#define NUM_DIAG_MD_DEV		DIAG_MD_LOCAL_LAST
+#else
+#define NUM_DIAG_MD_DEV		DIAG_MD_BRIDGE_LAST
+#endif
 
 struct diag_pkt_header_t {
 	uint8_t cmd_code;
@@ -404,6 +424,7 @@ struct diag_cmd_reg_tbl_t {
 struct diag_client_map {
 	char name[20];
 	int pid;
+	int timeout;
 };
 
 struct real_time_vote_t {
@@ -485,12 +506,14 @@ struct diag_logging_mode_param_t {
 	uint8_t pd_val;
 	uint8_t reserved;
 	int peripheral;
+	int device_mask;
 } __packed;
 
 struct diag_query_pid_t {
 	uint32_t peripheral_mask;
 	uint32_t pd_mask;
 	int pid;
+	int device_mask;
 };
 
 struct diag_con_all_param_t {
@@ -500,7 +523,7 @@ struct diag_con_all_param_t {
 
 struct diag_md_session_t {
 	int pid;
-	int peripheral_mask;
+	int peripheral_mask[NUM_DIAG_MD_DEV];
 	uint8_t hdlc_disabled;
 	uint8_t msg_mask_tbl_count;
 	struct timer_list hdlc_reset_timer;
@@ -599,8 +622,9 @@ struct diagchar_dev {
 	struct list_head dci_req_list;
 	struct list_head dci_client_list;
 	int dci_tag;
-	int dci_client_id;
+	int dci_client_id[MAX_DCI_CLIENTS];
 	struct mutex dci_mutex;
+	spinlock_t rpmsginfo_lock[NUM_PERIPHERALS];
 	int num_dci_client;
 	unsigned char *apps_dci_buf;
 	int dci_state;
@@ -675,20 +699,26 @@ struct diagchar_dev {
 	uint8_t *dci_pkt_buf; /* For Apps DCI packets */
 	uint32_t dci_pkt_length;
 	int in_busy_dcipktdata;
-	int logging_mode;
-	int logging_mask;
+	int logging_mode[NUM_DIAG_MD_DEV];
+	int logging_mask[NUM_DIAG_MD_DEV];
 	int pd_logging_mode[NUM_UPD];
 	int pd_session_clear[NUM_UPD];
 	int num_pd_session;
 	int diag_id_sent[NUM_PERIPHERALS];
 	int mask_check;
-	uint32_t md_session_mask;
-	uint8_t md_session_mode;
-	struct diag_md_session_t *md_session_map[NUM_MD_SESSIONS];
+	uint32_t md_session_mask[NUM_DIAG_MD_DEV];
+	uint8_t md_session_mode[NUM_DIAG_MD_DEV];
+	struct diag_md_session_t *md_session_map[NUM_DIAG_MD_DEV]
+					[NUM_MD_SESSIONS];
 	struct mutex md_session_lock;
 	/* Power related variables */
 	struct diag_ws_ref_t dci_ws;
 	struct diag_ws_ref_t md_ws;
+	/* HTC related variables */
+	int qxdm2sd_drop;
+	int qxdmusb_drop;
+	struct timeval st0;
+	struct timeval st1;
 	/* Pointers to Diag Masks */
 	struct diag_mask_info *msg_mask;
 	struct diag_mask_info *log_mask;
@@ -714,6 +744,15 @@ struct diagchar_dev {
 };
 
 extern struct diagchar_dev *driver;
+
+#define DIAG_DBG_READ	1
+#define DIAG_DBG_WRITE	2
+#define DIAG_DBG_DROP	3
+extern unsigned diag7k_debug_mask;
+#define DIAGFWD_7K_RAWDATA(buf, src, flag) \
+	__diagfwd_dbg_raw_data(buf, src, flag, diag7k_debug_mask)
+void __diagfwd_dbg_raw_data(void *buf, const char *src, unsigned dbg_flag, unsigned mask);
+
 
 extern int wrap_enabled;
 extern uint16_t wrap_count;
@@ -750,7 +789,9 @@ uint8_t diag_search_diagid_by_pd(uint8_t pd_val,
 void diag_record_stats(int type, int flag);
 
 struct diag_md_session_t *diag_md_session_get_pid(int pid);
-struct diag_md_session_t *diag_md_session_get_peripheral(uint8_t peripheral);
-int diag_md_session_match_pid_peripheral(int pid, uint8_t peripheral);
+struct diag_md_session_t *diag_md_session_get_peripheral(int dev_id,
+							uint8_t peripheral);
+int diag_md_session_match_pid_peripheral(int proc, int pid,
+					uint8_t peripheral);
 
 #endif
