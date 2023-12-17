@@ -479,6 +479,10 @@ int mhi_gen_tre(struct mhi_controller *mhi_cntrl,
 
 	return 0;
 }
+//Modem_BSP++
+const char *debug_mhi_queue_buf_chan_name=NULL;
+//Modem_BSP--
+const enum dma_data_direction *debug_mhi_queue_buf_chan_dir=NULL;
 
 int mhi_queue_buf(struct mhi_device *mhi_dev,
 		  struct mhi_chan *mhi_chan,
@@ -491,6 +495,11 @@ int mhi_queue_buf(struct mhi_device *mhi_dev,
 	unsigned long flags;
 	bool assert_wake = false;
 	int ret;
+
+	//Modem_BSP++
+	debug_mhi_queue_buf_chan_name=mhi_chan->name;
+	//Modem_BSP--
+	debug_mhi_queue_buf_chan_dir = &mhi_chan->dir;
 
 	/*
 	 * this check here only as a guard, it's always
@@ -1469,7 +1478,7 @@ static int __mhi_prepare_channel(struct mhi_controller *mhi_cntrl,
 		while (nr_el--) {
 			void *buf;
 
-			buf = kmalloc(len, GFP_KERNEL);
+			buf = kmalloc(len, GFP_KERNEL | ___GFP_NOFAIL);
 			if (!buf) {
 				ret = -ENOMEM;
 				goto error_pre_alloc;

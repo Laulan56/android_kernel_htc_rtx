@@ -127,7 +127,7 @@ static int mhi_queue_inbound(struct uci_dev *uci_dev)
 	int ret = -EIO, i;
 
 	for (i = 0; i < nr_trbs; i++) {
-		buf = kmalloc(mtu + sizeof(*uci_buf), GFP_KERNEL);
+		buf = kmalloc(mtu + sizeof(*uci_buf), GFP_KERNEL | ___GFP_NOFAIL);
 		if (!buf)
 			return -ENOMEM;
 

@@ -193,6 +193,12 @@ void mhi_deinit_dev_ctxt(struct mhi_controller *mhi_cntrl)
 			  mhi_ctxt->chan_ctxt_addr);
 
 	kfree(mhi_ctxt);
+
+	//Modem_BSP++
+	MHI_ERR("mhi_cntrl : %p, mhi_ctxt : %p\n",mhi_cntrl, mhi_ctxt);
+	dump_stack();
+	//Modem_BSP--
+
 	mhi_cntrl->mhi_ctxt = NULL;
 }
 
@@ -905,7 +911,7 @@ static int of_parse_ch_cfg(struct mhi_controller *mhi_cntrl,
 		return -EINVAL;
 
 	mhi_cntrl->mhi_chan = kcalloc(mhi_cntrl->max_chan,
-				      sizeof(*mhi_cntrl->mhi_chan), GFP_KERNEL);
+				      sizeof(*mhi_cntrl->mhi_chan), GFP_KERNEL | ___GFP_NOFAIL);
 	if (!mhi_cntrl->mhi_chan)
 		return -ENOMEM;
 
@@ -1099,7 +1105,7 @@ int of_register_mhi_controller(struct mhi_controller *mhi_cntrl)
 		return -EINVAL;
 
 	mhi_cntrl->mhi_cmd = kcalloc(NR_OF_CMD_RINGS,
-				     sizeof(*mhi_cntrl->mhi_cmd), GFP_KERNEL);
+				     sizeof(*mhi_cntrl->mhi_cmd), GFP_KERNEL | ___GFP_NOFAIL);
 	if (!mhi_cntrl->mhi_cmd) {
 		ret = -ENOMEM;
 		goto error_alloc_cmd;
@@ -1160,6 +1166,10 @@ int of_register_mhi_controller(struct mhi_controller *mhi_cntrl)
 	mhi_dev->mhi_cntrl = mhi_cntrl;
 	dev_set_name(&mhi_dev->dev, "%04x_%02u.%02u.%02u", mhi_dev->dev_id,
 		     mhi_dev->domain, mhi_dev->bus, mhi_dev->slot);
+
+	/* init wake source */
+	device_init_wakeup(&mhi_dev->dev, true);
+
 	ret = device_add(&mhi_dev->dev);
 	if (ret)
 		goto error_add_dev;
@@ -1220,7 +1230,7 @@ struct mhi_controller *mhi_alloc_controller(size_t size)
 {
 	struct mhi_controller *mhi_cntrl;
 
-	mhi_cntrl = kzalloc(size + sizeof(*mhi_cntrl), GFP_KERNEL);
+	mhi_cntrl = kzalloc(size + sizeof(*mhi_cntrl), GFP_KERNEL | ___GFP_NOFAIL);
 
 	if (mhi_cntrl && size)
 		mhi_controller_set_devdata(mhi_cntrl, mhi_cntrl + 1);

@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2015, 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2015, 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -18,26 +18,18 @@
 #include "esoc.h"
 #include "esoc-mdm.h"
 #include "mdm-dbg.h"
+//Modem_BSP++
+#include <linux/htc_flags.h>
+//Modem_BSP--
 
 /* Default number of powerup trial requests per session */
-#define ESOC_DEF_PON_REQ	2
-static unsigned int n_pon_tries = ESOC_DEF_PON_REQ;
-module_param(n_pon_tries, uint, 0644);
-MODULE_PARM_DESC(n_pon_tries,
-"Number of power-on retrials allowed upon boot failure");
+//Modem_BSP++
+#define ESOC_DEF_PON_REQ	10
 
-enum esoc_boot_fail_action {
-	BOOT_FAIL_ACTION_RETRY,
-	BOOT_FAIL_ACTION_COLD_RESET,
-	BOOT_FAIL_ACTION_SHUTDOWN,
-	BOOT_FAIL_ACTION_PANIC,
-	BOOT_FAIL_ACTION_NOP,
-};
+#define ESOC_MAX_PON_TRIES	10
+//Modem_BSP--
 
-static unsigned int boot_fail_action = BOOT_FAIL_ACTION_PANIC;
-module_param(boot_fail_action, uint, 0644);
-MODULE_PARM_DESC(boot_fail_action,
-"Actions: 0:Retry PON; 1:Cold reset; 2:Power-down; 3:APQ Panic; 4:No action");
+#define BOOT_FAIL_ACTION_DEF BOOT_FAIL_ACTION_PANIC
 
 enum esoc_pon_state {
 	PON_INIT,
@@ -69,11 +61,130 @@ struct mdm_drv {
 	struct work_struct ssr_work;
 	struct notifier_block esoc_restart;
 	struct mutex poff_lock;
+	atomic_t boot_fail_action;
+	atomic_t n_pon_tries;
 };
 #define to_mdm_drv(d)	container_of(d, struct mdm_drv, cmd_eng)
 
+#define S3_RESET_DELAY_MS	2000
+
+//Modem_BSP++
+int is_first_boot=1;
+int boot_fail_times=0;
+#define DEVICE_TREE_RADIO_PATH "/chosen/radio"
+
+static void mdm_boot_fail_action(struct mdm_drv *mdm_drv)
+{
+	struct device_node *dnp;
+	uint32_t val,val_2;
+
+	dnp = of_find_node_by_path(DEVICE_TREE_RADIO_PATH);
+
+	if(dnp) {
+		of_property_read_u32(dnp, "htc_smem_radio_dbg_flag_ext1", &val);
+		of_property_read_u32(dnp, "htc_smem_radio_dbg_flag", &val_2);
+
+		if(val_2 & BIT(3)) {
+			//8 0x08
+
+			if(val & BIT(6)) {
+				//A 0x40
+				atomic_set(&mdm_drv->boot_fail_action,BOOT_FAIL_ACTION_NOP);
+				esoc_mdm_log("mdm_boot_fail_action: BOOT_FAIL_ACTION_NOP\n");
+			}
+			else if(val & BIT(7)) {
+				//A 0x80
+				atomic_set(&mdm_drv->boot_fail_action,BOOT_FAIL_ACTION_S3_RESET);
+				esoc_mdm_log("mdm_boot_fail_action: BOOT_FAIL_ACTION_S3_RESET\n");
+			}
+			else if(val & BIT(13)) {
+				//A 0x2000
+				atomic_set(&mdm_drv->boot_fail_action,BOOT_FAIL_ACTION_RETRY);
+				esoc_mdm_log("mdm_boot_fail_action: BOOT_FAIL_ACTION_RETRY\n");
+			}
+			else if(val & BIT(14)) {
+				//A 0x4000
+				atomic_set(&mdm_drv->boot_fail_action,BOOT_FAIL_ACTION_COLD_RESET);
+				esoc_mdm_log("mdm_boot_fail_action: BOOT_FAIL_ACTION_COLD_RESET\n");
+			}
+			else if(val & BIT(15)) {
+				//A 0x8000
+				atomic_set(&mdm_drv->boot_fail_action,BOOT_FAIL_ACTION_PANIC);
+				esoc_mdm_log("mdm_boot_fail_action: BOOT_FAIL_ACTION_PANIC\n");
+			}
+			else{
+				if(is_first_boot==1){
+					atomic_set(&mdm_drv->boot_fail_action,BOOT_FAIL_ACTION_COLD_RESET);
+					esoc_mdm_log("is_first_boot=1, mdm_boot_fail_action: BOOT_FAIL_ACTION_COLD_RESET\n");
+					is_first_boot=0;
+				}
+				else if(is_first_boot==0){
+					atomic_set(&mdm_drv->boot_fail_action,BOOT_FAIL_ACTION_PANIC);
+					esoc_mdm_log("is_first_boot=0, mdm_boot_fail_action: BOOT_FAIL_ACTION_PANIC\n");
+				}
+			}
+		}
+		else{
+			boot_fail_times++;
+			if(boot_fail_times < ESOC_DEF_PON_REQ){
+				atomic_set(&mdm_drv->boot_fail_action,BOOT_FAIL_ACTION_COLD_RESET);
+				esoc_mdm_log("boot_fail_times=%d, mdm_boot_fail_action: BOOT_FAIL_ACTION_COLD_RESET\n",boot_fail_times);
+			}
+			else{
+				atomic_set(&mdm_drv->boot_fail_action,BOOT_FAIL_ACTION_PANIC);
+				esoc_mdm_log("boot_fail_times=%d, mdm_boot_fail_action: BOOT_FAIL_ACTION_PANIC\n",boot_fail_times);
+			}
+		}
+	} else
+		pr_err("[esoc]%s: cannot find path %s.\n", __func__, DEVICE_TREE_RADIO_PATH);
+}
+//Modem_BSP--
+
 static void esoc_client_link_power_off(struct esoc_clink *esoc_clink,
-							bool mdm_crashed);
+							unsigned int flags);
+static void esoc_client_link_mdm_crash(struct esoc_clink *esoc_clink);
+
+int esoc_set_boot_fail_action(struct esoc_clink *esoc_clink, u32 action)
+{
+	struct mdm_drv *mdm_drv = esoc_get_drv_data(esoc_clink);
+
+	if (action >= BOOT_FAIL_ACTION_LAST) {
+		esoc_mdm_log("Unknown boot fail action requested: %u\n",
+				action);
+		return -EINVAL;
+	}
+
+	if (!mdm_drv) {
+		esoc_mdm_log("esoc-mdm driver not present\n");
+		return -EAGAIN;
+	}
+
+	atomic_set(&mdm_drv->boot_fail_action, action);
+	esoc_mdm_log("Boot fail action configured to %u\n", action);
+
+	return 0;
+}
+
+int esoc_set_n_pon_tries(struct esoc_clink *esoc_clink, u32 n_tries)
+{
+	struct mdm_drv *mdm_drv = esoc_get_drv_data(esoc_clink);
+
+	if (n_tries > ESOC_MAX_PON_TRIES) {
+		esoc_mdm_log(
+			"Num PON tries requested (%u) is over the limit: %u\n",
+			n_tries, ESOC_MAX_PON_TRIES);
+	}
+
+	if (!mdm_drv) {
+		esoc_mdm_log("esoc-mdm driver not present\n");
+		return -EAGAIN;
+	}
+
+	atomic_set(&mdm_drv->n_pon_tries, n_tries);
+	esoc_mdm_log("Num PON tries configured to %u\n", n_tries);
+
+	return 0;
+}
 
 static int esoc_msm_restart_handler(struct notifier_block *nb,
 		unsigned long action, void *data)
@@ -93,7 +204,7 @@ static int esoc_msm_restart_handler(struct notifier_block *nb,
 			mutex_unlock(&mdm_drv->poff_lock);
 			return NOTIFY_OK;
 		}
-		esoc_client_link_power_off(esoc_clink, false);
+		esoc_client_link_power_off(esoc_clink, ESOC_HOOK_MDM_DOWN);
 		esoc_mdm_log(
 			"Reboot notifier: Notifying esoc of cold reboot\n");
 		dev_dbg(&esoc_clink->dev, "Notifying esoc of cold reboot\n");
@@ -122,6 +233,10 @@ static void mdm_handle_clink_evt(enum esoc_evt evt,
 		mdm_drv->pon_state = PON_SUCCESS;
 		mdm_drv->mode = RUN,
 		complete(&mdm_drv->pon_done);
+		//Modem_BSP++
+		is_first_boot=0;
+		boot_fail_times=0;
+		//Modem_BSP--
 		break;
 	case ESOC_RETRY_PON_EVT:
 		esoc_mdm_log(
@@ -168,10 +283,11 @@ static void mdm_ssr_fn(struct work_struct *work)
 	struct mdm_drv *mdm_drv = container_of(work, struct mdm_drv, ssr_work);
 	struct mdm_ctrl *mdm = get_esoc_clink_data(mdm_drv->esoc_clink);
 
+	esoc_client_link_mdm_crash(mdm_drv->esoc_clink);
+
 	mdm_wait_for_status_low(mdm, false);
 
 	esoc_mdm_log("Starting SSR work\n");
-
 	/*
 	 * If restarting esoc fails, the SSR framework triggers a kernel panic
 	 */
@@ -179,39 +295,54 @@ static void mdm_ssr_fn(struct work_struct *work)
 }
 
 static void esoc_client_link_power_on(struct esoc_clink *esoc_clink,
-							bool mdm_crashed)
+						unsigned int flags)
 {
 	int i;
 	struct esoc_client_hook *client_hook;
 
 	dev_dbg(&esoc_clink->dev, "Calling power_on hooks\n");
 	esoc_mdm_log(
-	"Calling power_on hooks with crash state: %d\n", mdm_crashed);
+	"Calling power_on hooks with flags: 0x%x\n", flags);
 
 	for (i = 0; i < ESOC_MAX_HOOKS; i++) {
 		client_hook = esoc_clink->client_hook[i];
 		if (client_hook && client_hook->esoc_link_power_on)
 			client_hook->esoc_link_power_on(client_hook->priv,
-							mdm_crashed);
+							flags);
 	}
 }
 
 static void esoc_client_link_power_off(struct esoc_clink *esoc_clink,
-							bool mdm_crashed)
+						unsigned int flags)
 {
 	int i;
 	struct esoc_client_hook *client_hook;
 
 	dev_dbg(&esoc_clink->dev, "Calling power_off hooks\n");
 	esoc_mdm_log(
-	"Calling power_off hooks with crash state: %d\n", mdm_crashed);
+	"Calling power_off hooks with flags: 0x%x\n", flags);
 
 	for (i = 0; i < ESOC_MAX_HOOKS; i++) {
 		client_hook = esoc_clink->client_hook[i];
 		if (client_hook && client_hook->esoc_link_power_off) {
 			client_hook->esoc_link_power_off(client_hook->priv,
-							mdm_crashed);
+							flags);
 		}
+	}
+}
+
+static void esoc_client_link_mdm_crash(struct esoc_clink *esoc_clink)
+{
+	int i;
+	struct esoc_client_hook *client_hook;
+
+	dev_dbg(&esoc_clink->dev, "Calling mdm_crash hooks\n");
+	esoc_mdm_log("Calling mdm_crash hooks\n");
+
+	for (i = 0; i < ESOC_MAX_HOOKS; i++) {
+		client_hook = esoc_clink->client_hook[i];
+		if (client_hook && client_hook->esoc_link_mdm_crash)
+			client_hook->esoc_link_mdm_crash(client_hook->priv);
 	}
 }
 
@@ -251,7 +382,7 @@ static int mdm_subsys_shutdown(const struct subsys_desc *crashed_subsys,
 			return 0;
 
 		esoc_clink_queue_request(ESOC_REQ_CRASH_SHUTDOWN, esoc_clink);
-		esoc_client_link_power_off(esoc_clink, true);
+		esoc_client_link_power_off(esoc_clink, ESOC_HOOK_MDM_CRASH);
 
 		esoc_mdm_log("Executing the ESOC_PREPARE_DEBUG command\n");
 		ret = clink_ops->cmd_exe(ESOC_PREPARE_DEBUG,
@@ -295,7 +426,7 @@ static int mdm_subsys_shutdown(const struct subsys_desc *crashed_subsys,
 			mutex_unlock(&mdm_drv->poff_lock);
 			return ret;
 		}
-		esoc_client_link_power_off(esoc_clink, false);
+		esoc_client_link_power_off(esoc_clink, ESOC_HOOK_MDM_DOWN);
 		/* Pull the reset line low to turn off the device */
 		clink_ops->cmd_exe(ESOC_FORCE_PWR_OFF, esoc_clink);
 		mdm_drv->mode = PWR_OFF;
@@ -305,28 +436,44 @@ static int mdm_subsys_shutdown(const struct subsys_desc *crashed_subsys,
 	return 0;
 }
 
-static void mdm_subsys_retry_powerup_cleanup(struct esoc_clink *esoc_clink)
+static void mdm_subsys_retry_powerup_cleanup(struct esoc_clink *esoc_clink,
+							unsigned int poff_flags)
 {
 	struct mdm_ctrl *mdm = get_esoc_clink_data(esoc_clink);
 	struct mdm_drv *mdm_drv = esoc_get_drv_data(esoc_clink);
 
 	esoc_mdm_log("Doing cleanup\n");
 
-	esoc_client_link_power_off(esoc_clink, false);
+	esoc_client_link_power_off(esoc_clink, poff_flags);
 	mdm_disable_irqs(mdm);
 	mdm_drv->pon_state = PON_INIT;
 	reinit_completion(&mdm_drv->pon_done);
 	reinit_completion(&mdm_drv->req_eng_wait);
 }
 
+//Modem_BSP++
+int is_boot_fail=0;
+//Modem_BSP--
+
 /* Returns 0 to proceed towards another retry, or an error code to quit */
 static int mdm_handle_boot_fail(struct esoc_clink *esoc_clink, u8 *pon_trial)
 {
 	struct mdm_ctrl *mdm = get_esoc_clink_data(esoc_clink);
+	struct mdm_drv *mdm_drv = esoc_get_drv_data(esoc_clink);
 
-	switch (boot_fail_action) {
+	if (*pon_trial == atomic_read(&mdm_drv->n_pon_tries)) {
+		esoc_mdm_log("Reached max. number of boot trials\n");
+		atomic_set(&mdm_drv->boot_fail_action,
+					BOOT_FAIL_ACTION_PANIC);
+	}
+
+	//Modem BSP++
+	mdm_boot_fail_action(mdm_drv);
+	//Modem BSP--
+
+	switch (atomic_read(&mdm_drv->boot_fail_action)) {
 	case BOOT_FAIL_ACTION_RETRY:
-		mdm_subsys_retry_powerup_cleanup(esoc_clink);
+		mdm_subsys_retry_powerup_cleanup(esoc_clink, 0);
 		esoc_mdm_log("Request to retry a warm reset\n");
 		(*pon_trial)++;
 		break;
@@ -336,10 +483,25 @@ static int mdm_handle_boot_fail(struct esoc_clink *esoc_clink, u8 *pon_trial)
 	 * issuing a cold reset & a warm reset back to back.
 	 */
 	case BOOT_FAIL_ACTION_COLD_RESET:
-		mdm_subsys_retry_powerup_cleanup(esoc_clink);
+		mdm_subsys_retry_powerup_cleanup(esoc_clink,
+							ESOC_HOOK_MDM_DOWN);
 		esoc_mdm_log("Doing cold reset by power-down and warm reset\n");
 		(*pon_trial)++;
+		//Modem_BSP++
+		is_boot_fail=1;
+		//Modem_BSP--
 		mdm_power_down(mdm);
+		//Modem_BSP++
+		is_boot_fail=0;
+		//Modem_BSP--
+		break;
+	case BOOT_FAIL_ACTION_S3_RESET:
+		mdm_subsys_retry_powerup_cleanup(esoc_clink,
+							ESOC_HOOK_MDM_DOWN);
+		esoc_mdm_log("Doing an S3 reset\n");
+		(*pon_trial)++;
+		mdm_power_down(mdm);
+		msleep(S3_RESET_DELAY_MS);
 		break;
 	case BOOT_FAIL_ACTION_PANIC:
 		esoc_mdm_log("Calling panic!!\n");
@@ -350,7 +512,8 @@ static int mdm_handle_boot_fail(struct esoc_clink *esoc_clink, u8 *pon_trial)
 		return -EIO;
 	case BOOT_FAIL_ACTION_SHUTDOWN:
 	default:
-		mdm_subsys_retry_powerup_cleanup(esoc_clink);
+		mdm_subsys_retry_powerup_cleanup(esoc_clink,
+							ESOC_HOOK_MDM_DOWN);
 		esoc_mdm_log("Shutdown the modem and quit\n");
 		mdm_power_down(mdm);
 		return -EIO;
@@ -368,7 +531,7 @@ static int mdm_subsys_powerup(const struct subsys_desc *crashed_subsys)
 	struct mdm_drv *mdm_drv = esoc_get_drv_data(esoc_clink);
 	const struct esoc_clink_ops * const clink_ops = esoc_clink->clink_ops;
 	int timeout = INT_MAX;
-	u8 pon_trial = 1;
+	u8 pon_trial = 0;
 
 	esoc_mdm_log("Powerup request from SSR\n");
 
@@ -393,7 +556,7 @@ static int mdm_subsys_powerup(const struct subsys_desc *crashed_subsys)
 				dev_err(&esoc_clink->dev, "pwr on fail\n");
 				return ret;
 			}
-			esoc_client_link_power_on(esoc_clink, false);
+			esoc_client_link_power_on(esoc_clink, 0);
 		} else if (mdm_drv->mode == IN_DEBUG) {
 			esoc_mdm_log("In SSR power-on mode\n");
 			esoc_mdm_log("Executing the ESOC_EXIT_DEBUG command\n");
@@ -412,7 +575,8 @@ static int mdm_subsys_powerup(const struct subsys_desc *crashed_subsys)
 				dev_err(&esoc_clink->dev, "pwr on fail\n");
 				return ret;
 			}
-			esoc_client_link_power_on(esoc_clink, true);
+			esoc_client_link_power_on(esoc_clink,
+							ESOC_HOOK_MDM_CRASH);
 		}
 
 		/*
@@ -437,11 +601,11 @@ static int mdm_subsys_powerup(const struct subsys_desc *crashed_subsys)
 			esoc_mdm_log(
 			"Boot failed. Doing cleanup and attempting to retry\n");
 			pon_trial++;
-			mdm_subsys_retry_powerup_cleanup(esoc_clink);
+			mdm_subsys_retry_powerup_cleanup(esoc_clink, 0);
 		} else if (mdm_drv->pon_state == PON_SUCCESS) {
 			break;
 		}
-	} while (pon_trial <= n_pon_tries);
+	} while (pon_trial <= atomic_read(&mdm_drv->n_pon_tries));
 
 	return 0;
 }
@@ -486,6 +650,10 @@ int esoc_ssr_probe(struct esoc_clink *esoc_clink, struct esoc_drv *drv)
 	int ret;
 	struct mdm_drv *mdm_drv;
 	struct esoc_eng *esoc_eng;
+	//Modem_BSP++
+	struct mdm_ctrl *mdm = get_esoc_clink_data(esoc_clink);
+	unsigned int abnrst_flag = get_abnrst_flag();
+	//Modem_BSP--
 
 	mdm_drv = devm_kzalloc(&esoc_clink->dev, sizeof(*mdm_drv), GFP_KERNEL);
 	if (IS_ERR_OR_NULL(mdm_drv))
@@ -513,6 +681,8 @@ int esoc_ssr_probe(struct esoc_clink *esoc_clink, struct esoc_drv *drv)
 	mdm_drv->esoc_clink = esoc_clink;
 	mdm_drv->mode = PWR_OFF;
 	mdm_drv->pon_state = PON_INIT;
+	atomic_set(&mdm_drv->boot_fail_action, BOOT_FAIL_ACTION_DEF);
+	atomic_set(&mdm_drv->n_pon_tries, ESOC_DEF_PON_REQ);
 	mdm_drv->esoc_restart.notifier_call = esoc_msm_restart_handler;
 	ret = register_reboot_notifier(&mdm_drv->esoc_restart);
 	if (ret)
@@ -525,6 +695,15 @@ int esoc_ssr_probe(struct esoc_clink *esoc_clink, struct esoc_drv *drv)
 		dev_dbg(&esoc_clink->dev, "dbg engine initialized\n");
 		debug_init_done = true;
 	}
+
+	//Modem_BSP++
+	esoc_mdm_log("abnrst = %d\n" , abnrst_flag);
+	if(abnrst_flag==0 && gpio_get_value(MDM_GPIO(mdm, AP2MDM_SOFT_RESET))==1)
+	{
+		gpio_direction_output(MDM_GPIO(mdm, AP2MDM_SOFT_RESET),0);
+		esoc_mdm_log("Pull down AP2MDM_SOFT_RESET gpio\n");
+	}
+	//Modem_BSP--
 
 	return 0;
 queue_err:

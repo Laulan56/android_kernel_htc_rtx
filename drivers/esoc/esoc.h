@@ -34,6 +34,7 @@ do { \
 	if (ipc_log) \
 		ipc_log_string(ipc_log, \
 			"[%s]: "__msg, __func__, ##__VA_ARGS__); \
+	pr_info("[esoc]"__msg, ##__VA_ARGS__); \
 } while (0)
 
 #define ESOC_DEV_MAX		4
@@ -193,3 +194,7 @@ static inline void notify_esoc_clients(struct esoc_clink *esoc_clink,
 bool esoc_req_eng_enabled(struct esoc_clink *esoc_clink);
 bool esoc_cmd_eng_enabled(struct esoc_clink *esoc_clink);
 #endif
+
+/* Modem boot fail actions */
+int esoc_set_boot_fail_action(struct esoc_clink *esoc_clink, u32 action);
+int esoc_set_n_pon_tries(struct esoc_clink *esoc_clink, u32 n_tries);
