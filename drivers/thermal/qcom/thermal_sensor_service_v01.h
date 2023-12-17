@@ -29,6 +29,10 @@
 #define QMI_TS_SENSOR_ID_LENGTH_MAX_V01 32
 #define QMI_TS_SENSOR_LIST_MAX_V01 32
 
+#define QMI_HTC_TS_COMMON_REQ_V01 0x0023
+#define QMI_HTC_TS_COMMON_RESP_V01 0x0023
+#define QMI_HTC_TS_COMMON_IND_V01 0x0024
+
 struct ts_sensor_type_v01 {
 	char sensor_id[QMI_TS_SENSOR_ID_LENGTH_MAX_V01 + 1];
 };
@@ -85,5 +89,33 @@ struct ts_temp_report_ind_msg_v01 {
 };
 #define TS_TEMP_REPORT_IND_MSG_V01_MAX_MSG_LEN 57
 extern struct qmi_elem_info ts_temp_report_ind_msg_v01_ei[];
+
+#define HTC_TS_COMMON_REQ_MSG_BUF_LEN 263
+
+struct qmi_htc_ts_common_req_msg_v01 {
+	uint8_t common_req_id;
+	uint8_t common_req_valid; /**< Must be set to true if common_req is being passed */
+	uint8_t common_req[256];
+}; /* Message */
+#define HTC_TS_COMMON_REQ_MSG_V01_MAX_MSG_LEN 263
+extern struct qmi_elem_info qmi_htc_ts_common_req_msg_v01_ei[];
+
+struct qmi_htc_ts_common_resp_msg_v01 {
+	struct qmi_response_type_v01 resp;
+	uint8_t common_resp_valid; /**< Must be set to true if common_resp is being passed */
+	uint8_t common_resp[256];
+}; /* Message */
+#define HTC_TS_COMMON_RESP_MSG_V01_MAX_MSG_LEN 270
+extern struct qmi_elem_info qmi_htc_ts_common_resp_msg_v01_ei[];
+
+struct qmi_htc_ts_common_ind_msg_v01 {
+	uint8_t common_ind_id_valid; /**< Must be set to true if common_ind_id is being passed */
+	uint8_t common_ind_id;
+	/* Optional */
+	uint8_t common_ind_valid; /**< Must be set to true if common_ind is being passed */
+	uint8_t common_ind[256];
+}; /* Message */
+#define HTC_TS_COMMON_IND_MSG_V01_MAX_MSG_LEN 263
+extern struct qmi_elem_info qmi_htc_ts_common_ind_msg_v01_ei[];
 
 #endif
